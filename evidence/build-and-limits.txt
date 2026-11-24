@@ -1,0 +1,7 @@
+Board: ATK-DLMP157 V1.5, STM32MP157D
+Kernel for the test: Linux ATK-stm32mp1 5.4.31 #6 SMP PREEMPT Fri Nov 20 16:41:44 CST 2026 armv7l (BSP tree, fix applied)
+Test date: 2026-11-20
+Sensor: ICM-20608 on SPI0, module build id d21247001af663a0f8a80f21681470fad73bf73d
+IIO device: /sys/bus/iio/devices/iio:device0
+Test: board_test --test channels --channel-cases 126 --warmup 1 --settle 1 --duration 1
+Limits basis: FIFO-LAB-01 project screen, 50 Hz, 20 Hz DLPF, fixed tilt and room temperature; DS-000081 Rev 1.0 pp.7-8 (G variant, reference only); not D-variant qualification. Limits are project engineering budgets, not datasheet guarantees.

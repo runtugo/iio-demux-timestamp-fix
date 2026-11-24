@@ -1,0 +1,24 @@
+--- a/drivers/iio/industrialio-buffer.c
++++ b/drivers/iio/industrialio-buffer.c
+@@ -863,9 +863,20 @@
+ 	}
+ 	/* Relies on scan_timestamp being last */
+ 	if (buffer->scan_timestamp) {
++		unsigned int src_loc = 0;
++		unsigned int si;
++		int axis_len;
++
++		/* Skip unselected channels before the source timestamp. */
++		for_each_set_bit(si, indio_dev->active_scan_mask,
++				 indio_dev->masklength) {
++			axis_len = iio_storage_bytes_for_si(indio_dev, si);
++			src_loc = ALIGN(src_loc, axis_len) + axis_len;
++		}
++
+ 		length = iio_storage_bytes_for_timestamp(indio_dev);
++		in_loc = ALIGN(src_loc, length);
+ 		out_loc = roundup(out_loc, length);
+-		in_loc = roundup(in_loc, length);
+ 		ret = iio_buffer_add_demux(buffer, &p, in_loc, out_loc, length);
+ 		if (ret)
+ 			goto error_clear_mux_table;

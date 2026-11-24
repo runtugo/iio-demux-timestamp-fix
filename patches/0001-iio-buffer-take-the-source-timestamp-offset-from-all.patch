@@ -1,0 +1,60 @@
+From 88c61ca27fbcfa6fad68689dfbaf7dddebb06399 Mon Sep 17 00:00:00 2001
+From: liu haojie <2669793217@qq.com>
+Date: Tue, 24 Nov 2026 20:06:40 +0800
+Subject: [PATCH] iio: buffer: take the source timestamp offset from all active
+ channels
+
+When scan_timestamp is set, iio_buffer_update_demux() computes the source
+offset of the timestamp from the end of the last channel that was copied.
+If that channel is not the last active channel, the trailing unselected
+channels are skipped by the demux but not by this calculation, so the
+timestamp is read from the wrong place.
+
+iio_compute_scan_bytes() lays out the raw scan as all active channels
+followed by an aligned timestamp. Compute the timestamp source offset the
+same way, by walking every active channel, so the demux matches the
+layout the driver pushes.
+
+Reproduced on an STM32MP157 board with an SPI IIO accelerometer/gyro
+driver: with only the X acceleration channel and the timestamp enabled,
+the timestamp read back from the buffer was padding and a repeated or
+decreasing value. With the fix the timestamp is monotonic.
+
+Signed-off-by: liu haojie <2669793217@qq.com>
+---
+ drivers/iio/industrialio-buffer.c | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/iio/industrialio-buffer.c b/drivers/iio/industrialio-buffer.c
+index 4294101..a8a40d4 100644
+--- a/drivers/iio/industrialio-buffer.c
++++ b/drivers/iio/industrialio-buffer.c
+@@ -1109,13 +1109,25 @@ static int iio_buffer_update_demux(struct iio_dev *indio_dev,
+ 	}
+ 	/* Relies on scan_timestamp being last */
+ 	if (buffer->scan_timestamp) {
++		unsigned int src_loc = 0;
++		unsigned int si;
++
++		/* Skip unselected channels before the source timestamp. */
++		for_each_set_bit(si, indio_dev->active_scan_mask,
++				 iio_get_masklength(indio_dev)) {
++			ret = iio_storage_bytes_for_si(indio_dev, si);
++			if (ret < 0)
++				goto error_clear_mux_table;
++			src_loc = ALIGN(src_loc, ret) + ret;
++		}
++
+ 		ret = iio_storage_bytes_for_timestamp(indio_dev);
+ 		if (ret < 0)
+ 			goto error_clear_mux_table;
+ 
+ 		length = ret;
++		in_loc = ALIGN(src_loc, length);
+ 		out_loc = roundup(out_loc, length);
+-		in_loc = roundup(in_loc, length);
+ 		ret = iio_buffer_add_demux(buffer, &p, in_loc, out_loc, length);
+ 		if (ret)
+ 			goto error_clear_mux_table;
+-- 
+2.34.1
