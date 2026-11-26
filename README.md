@@ -1,48 +1,42 @@
-# IIO demux: take the timestamp source offset from all active channels
+# IIO demux: fix the timestamp source offset
 
-This repository holds a fix for `iio_buffer_update_demux()` in `drivers/iio/industrialio-buffer.c`, the patch sent to linux-iio, and the STM32MP157 board test evidence used to find and check the bug.
+This repository documents an IIO buffer demultiplexing bug found on an STM32MP157 with an ICM-20608 SPI/IIO driver. It contains the Linux IIO mailing-list patches and the separate Linux 5.4.31 BSP fix and board-test summary.
 
-## Contents
+## Upstream submission
 
-- `patches/0001-iio-buffer-take-the-source-timestamp-offset-from-all.patch`: patch against Linux master (commit `8d7fe98`), as sent to linux-iio. Submission status: sent, not yet reviewed or merged.
-- `patches/bsp-5.4.31-tested.diff`: the same change as applied to the Linux 5.4.31 BSP that the board test ran on. The code shape differs slightly from the master patch (`masklength` vs `iio_get_masklength()`, `int` vs `ret` for the axis length). The algorithm is the same.
-- `evidence/channels-126-summary.tsv`: per-case results of 126 channel-subset and timestamp-switch configurations on the BSP kernel, with the post-fix results.
-- `evidence/build-and-limits.txt`: kernel identity and the acceptance limits file used.
+- **v2:** [`patches/0001-iio-buffer-use-cached-timestamp-offset-in-demux-v2.patch`](patches/0001-iio-buffer-use-cached-timestamp-offset-in-demux-v2.patch), based on Linux master commit `8d7fe98`. It reuses the cached source timestamp offset instead of recomputing it.
+- **v1:** [`patches/0001-iio-buffer-take-the-source-timestamp-offset-from-all.patch`](patches/0001-iio-buffer-take-the-source-timestamp-offset-from-all.patch), retained for the review history.
+- [v2 patch on the Linux IIO mailing list](https://lore.kernel.org/linux-iio/tencent_945BB9A3F886BF4E33511C90AD6F89C40809@qq.com/) and [Arnav Kapoor's Reviewed-by](https://lore.kernel.org/linux-iio/20261125134805.57530-1-kapoorarnav43@gmail.com/).
+- [Patchwork status](https://patchwork.kernel.org/series/1221852/): **New** as checked on 2026-11-26. Reviewed-by is not a merge; this is a mailing-list patch, not a GitHub pull request.
 
-## Problem
+## Problem and fix
 
-With `scan_timestamp` enabled, the demux computes where the timestamp sits in the raw scan from the end of the last *selected* channel. The driver pushes a scan where the timestamp follows *all* active channels, aligned to 8 bytes (`iio_compute_scan_bytes()`). When the last selected channel is not the last active channel, the demux reads the timestamp from the wrong offset.
+When a buffer requests a subset of the device's active scan channels and a timestamp, the old demux source cursor only advances to the end of the last selected channel. Unselected trailing source channels can cause it to read the timestamp from the wrong offset.
 
-Example: only accelerometer X and the timestamp are enabled. The raw scan is 24 bytes (six 16-bit axes, 4 bytes padding, 8-byte timestamp at offset 16). The old demux read the timestamp from offset 8, which holds gyro Y/Z and padding.
+For the reproduced `X + timestamp` case, the device source scan contains six 16-bit axes, 4 bytes of padding and an 8-byte timestamp at offset **16**. The old demux reads offset **8**. In the destination scan, offset **8** is correct because only the X channel precedes the timestamp.
 
-Before the fix, the 13 of 25 timestamp-enabled subsets that were tested (earlier run on kernel `#5`, not in this repository) produced 435 non-positive or non-increasing timestamps. For the `X + timestamp` case, 34 of 50 steady-state frames were invalid.
+On the v2 mainline base, `iio_compute_scan_bytes()` calculates the source timestamp offset for the actual active scan mask; `iio_enable_buffers()` caches it before building the demux table. The push helper also uses this cached offset. v2 uses `ACCESS_PRIVATE(indio_dev, scan_timestamp_offset)` for the demux source while leaving destination alignment unchanged.
 
-## Fix
+The tested 5.4.31 BSP does not have this cached field. Its [separate BSP patch](patches/bsp-5.4.31-tested.diff) walks all active source channels and aligns the timestamp; it is not the mainline v2 patch and remains unchanged.
 
-Walk every active channel to compute the source offset of the timestamp, aligned the way `iio_compute_scan_bytes()` aligns it, and use that as `in_loc`. The destination offset is unchanged.
+## Board test result: BSP 5.4.31, not mainline v2
 
-## Board test result (BSP kernel, after the fix)
+On STM32MP157D with ICM-20608, Linux 5.4.31 `#6`, 50 Hz configured rate, 1 s warm-up and 1 s capture per case:
 
-Kernel: `Linux ATK-stm32mp1 5.4.31 #6`, STM32MP157D, ICM-20608 SPI IIO driver, 50 Hz, 1 s warm-up, 1 s capture per case.
+- Before the BSP fix, 13 of 25 tested timestamp-enabled configurations had 435 non-positive or non-increasing timestamps. The X + timestamp case had 34 invalid timestamps in 50 steady-state frames.
+- After the BSP fix, 126/126 configurations passed: 63 channel subsets with timestamps off and 63 with timestamps on. The X + timestamp case had 0/50 timestamp errors; delivery was 49–50 frames/s.
+- See [per-case results](evidence/channels-126-summary.tsv) and [kernel identity and limits](evidence/build-and-limits.txt).
 
-- 126 of 126 cases PASS (63 subsets with timestamp off, 63 with timestamp on, from the 7-bit scan mask encoded as `layout-XX`; bit `0x40` is the timestamp switch).
-- `timestamp_errors` is 0 for every case; delivery is 49–50 Hz; no saturated channels.
-- See `evidence/channels-126-summary.tsv`.
+These are results for the separate downstream BSP fix, not a build or hardware test of the mainline v2 patch. Software timestamps and userspace delivery rates do not prove hardware sampling precision or exact loss counts. The channel checks do not calibrate axis accuracy or angular rate. The raw `.bin`/`.csv` samples and full `results.txt` are not in this repository.
 
-## What this does not show
+## Reproduce the BSP test
 
-- The master patch was not built or run on mainline hardware. The board result is from the BSP 5.4.31 tree.
-- Timestamps are software timestamps from the kernel. They do not prove hardware sampling precision or the number of lost samples.
-- The channel checks verify subset layout and timestamp monotonicity at rest. They do not calibrate axis accuracy or angular rate.
-- The raw sample archive (about 1.7 MB, including `.bin` and `.csv` for all 126 cases) and the full `results.txt` are not in this repository yet.
-
-## Reproduce the kernel side
+The `board_test` program and limits file are part of the ICM-20608 driver project and are not included here. After applying the BSP patch and building and booting the BSP kernel, run on the board:
 
 ```sh
-# Build the kernel with the patch applied, copy to the board, then on the board:
 board_test --device /sys/bus/iio/devices/iio:device0 --report /tmp/demux-126 \
   --test channels --channel-cases 126 --interactive \
   --limits fifo-lab.limits --warmup 1 --settle 1 --duration 1
 ```
 
-The test program is part of the ICM-20608 driver project and is not included here.
+The upstream v2 patch was not successfully built or run on mainline hardware in this work.
